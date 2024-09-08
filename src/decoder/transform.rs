@@ -2,7 +2,10 @@
 
 mod palette;
 
-use crate::{BitDepth, ColorType, DecodingError, Info, Transformations};
+use crate::{
+    premultiply_srgb, AlphaMode, BitDepth, ColorType, DecodingError, Info, ScreenGamma,
+    Transformations,
+};
 
 use super::stream::FormatErrorInner;
 
@@ -19,6 +22,7 @@ pub type TransformFn = Box<dyn Fn(&[u8], &mut [u8], &Info) + Send + Sync>;
 /// by the crate client (`transform`).
 pub fn create_transform_fn(
     info: &Info,
+    alpha_mode: AlphaMode,
     transform: Transformations,
 ) -> Result<TransformFn, DecodingError> {
     let color_type = info.color_type;
@@ -44,9 +48,9 @@ pub fn create_transform_fn(
                 ));
             } else {
                 Ok(if trns {
-                    palette::create_expansion_into_rgba8(info)
+                    palette::create_expansion_into_rgba8(info, alpha_mode)
                 } else {
-                    palette::create_expansion_into_rgb8(info)
+                    palette::create_expansion_into_rgb8(info, alpha_mode)
                 })
             }
         }
@@ -72,12 +76,28 @@ pub fn create_transform_fn(
         {
             Ok(Box::new(transform_row_strip16))
         }
+        ColorType::Rgba if alpha_mode == AlphaMode::Premultiplied(ScreenGamma::SRgb) => {
+            Ok(Box::new(copy_premultiplied_srgb))
+        }
         _ => Ok(Box::new(copy_row)),
     }
 }
 
 fn copy_row(row: &[u8], output_buffer: &mut [u8], _: &Info) {
     output_buffer.copy_from_slice(row);
+}
+
+fn copy_premultiplied_srgb(row: &[u8], output_buffer: &mut [u8], _: &Info) {
+    for (i, chunk) in row.chunks_exact(4).enumerate() {
+        let alpha = chunk[3];
+        let r = premultiply_srgb(chunk[0], alpha);
+        let g = premultiply_srgb(chunk[1], alpha);
+        let b = premultiply_srgb(chunk[2], alpha);
+        output_buffer[i * 4] = r;
+        output_buffer[i * 4 + 1] = g;
+        output_buffer[i * 4 + 2] = b;
+        output_buffer[i * 4 + 3] = chunk[3];
+    }
 }
 
 fn transform_row_strip16(row: &[u8], output_buffer: &mut [u8], _: &Info) {

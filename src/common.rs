@@ -810,3 +810,43 @@ impl fmt::Display for ParameterError {
         }
     }
 }
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub enum AlphaMode {
+    Png,
+    Premultiplied(ScreenGamma),
+}
+
+impl Default for AlphaMode {
+    fn default() -> Self {
+        return AlphaMode::Png;
+    }
+}
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub enum ScreenGamma {
+    SRgb,
+}
+
+#[inline(always)]
+pub(crate) fn premultiply_srgb(pixel: u8, alpha: u8) -> u8 {
+    let alpha = alpha as f32 / 255.0;
+    // TODO: support other than sRGB?
+    return ((pixel as f32).powf(2.2) * alpha).powf(1.0 / 2.2).round() as u8;
+}
+
+#[cfg(test)]
+mod test {
+    use super::premultiply_srgb;
+
+    #[test]
+    fn test_premultiply() {
+        assert_eq!(premultiply_srgb(0, 0), 0);
+        assert_eq!(premultiply_srgb(0, 255), 0);
+        assert_eq!(premultiply_srgb(255, 0), 0);
+        assert_eq!(premultiply_srgb(255, 255), 255);
+        assert_eq!(premultiply_srgb(255, 128), 186);
+        assert_eq!(premultiply_srgb(128, 255), 128);
+        assert_eq!(premultiply_srgb(128, 128), 94);
+    }
+}

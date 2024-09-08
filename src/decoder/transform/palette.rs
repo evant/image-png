@@ -17,10 +17,10 @@
 //! that memoization is a net benefit for images bigger than around 13x13 pixels.
 
 use super::{unpack_bits, TransformFn};
-use crate::{BitDepth, Info};
+use crate::{premultiply_srgb, AlphaMode, BitDepth, Info, ScreenGamma};
 
-pub fn create_expansion_into_rgb8(info: &Info) -> TransformFn {
-    let rgba_palette = create_rgba_palette(info);
+pub fn create_expansion_into_rgb8(info: &Info, alpha_mode: AlphaMode) -> TransformFn {
+    let rgba_palette = create_rgba_palette(info, alpha_mode);
 
     if info.bit_depth == BitDepth::Eight {
         Box::new(move |input, output, _info| expand_8bit_into_rgb8(input, output, &rgba_palette))
@@ -29,14 +29,14 @@ pub fn create_expansion_into_rgb8(info: &Info) -> TransformFn {
     }
 }
 
-pub fn create_expansion_into_rgba8(info: &Info) -> TransformFn {
-    let rgba_palette = create_rgba_palette(info);
+pub fn create_expansion_into_rgba8(info: &Info, alpha_mode: AlphaMode) -> TransformFn {
+    let rgba_palette = create_rgba_palette(info, alpha_mode);
     Box::new(move |input, output, info| {
         expand_paletted_into_rgba8(input, output, info, &rgba_palette)
     })
 }
 
-fn create_rgba_palette(info: &Info) -> [[u8; 4]; 256] {
+fn create_rgba_palette(info: &Info, alpha_mode: AlphaMode) -> [[u8; 4]; 256] {
     let palette = info.palette.as_deref().expect("Caller should verify");
     let trns = info.trns.as_deref().unwrap_or(&[]);
 
@@ -80,6 +80,14 @@ fn create_rgba_palette(info: &Info) -> [[u8; 4]; 256] {
     // all the clobbered alpha values.
     for (alpha, rgba) in trns.iter().copied().zip(rgba_palette.iter_mut()) {
         rgba[3] = alpha;
+        match alpha_mode {
+            AlphaMode::Png => {}
+            AlphaMode::Premultiplied(ScreenGamma::SRgb) => {
+                rgba[0] = premultiply_srgb(rgba[0], alpha);
+                rgba[1] = premultiply_srgb(rgba[1], alpha);
+                rgba[2] = premultiply_srgb(rgba[2], alpha);
+            }
+        }
     }
 
     // Unclobber the remaining alpha values.
@@ -127,7 +135,7 @@ fn expand_paletted_into_rgba8(
 
 #[cfg(test)]
 mod test {
-    use crate::{BitDepth, ColorType, Info, Transformations};
+    use crate::{premultiply_srgb, AlphaMode, BitDepth, ColorType, Info, Transformations};
 
     /// Old, non-memoized version of the code is used as a test oracle.
     fn oracle_expand_paletted_into_rgb8(row: &[u8], buffer: &mut [u8], info: &Info) {
@@ -203,7 +211,8 @@ mod test {
 
         let mut dst = vec![0; samples_count * output_bytes_per_input_sample];
         let transform_fn =
-            super::super::create_transform_fn(&info, Transformations::EXPAND).unwrap();
+            super::super::create_transform_fn(&info, AlphaMode::default(), Transformations::EXPAND)
+                .unwrap();
         transform_fn(src, dst.as_mut_slice(), &info);
 
         {
@@ -353,7 +362,37 @@ mod test {
 
                 let info = create_info(8, &plte, Some(&trns));
                 let expected = create_expected_rgba_palette(&plte, &trns);
-                let actual = super::create_rgba_palette(&info);
+                let actual = super::create_rgba_palette(&info, AlphaMode::default());
+                assert_eq!(actual, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn test_create_rgba_palette_premultiplied() {
+        fn create_expected_rgba_palette(plte: &[u8], trns: &[u8]) -> [[u8; 4]; 256] {
+            let mut rgba = [[1, 2, 3, 4]; 256];
+            for (i, rgba) in rgba.iter_mut().enumerate() {
+                let alpha = trns.get(i * 1 + 0).map(|&a| a).unwrap_or(0xFF);
+                rgba[0] = premultiply_srgb(plte.get(i * 3 + 0).map(|&r| r).unwrap_or(0), alpha);
+                rgba[1] = premultiply_srgb(plte.get(i * 3 + 1).map(|&g| g).unwrap_or(0), alpha);
+                rgba[2] = premultiply_srgb(plte.get(i * 3 + 2).map(|&b| b).unwrap_or(0), alpha);
+                rgba[3] = alpha;
+            }
+            rgba
+        }
+
+        for plte_len in 1..=32 {
+            for trns_len in 0..=plte_len {
+                let plte: Vec<u8> = (0..plte_len * 3).collect();
+                let trns: Vec<u8> = (0..trns_len).map(|alpha| alpha + 200).collect();
+
+                let info = create_info(8, &plte, Some(&trns));
+                let expected = create_expected_rgba_palette(&plte, &trns);
+                let actual = super::create_rgba_palette(
+                    &info,
+                    AlphaMode::Premultiplied(crate::ScreenGamma::SRgb),
+                );
                 assert_eq!(actual, expected);
             }
         }

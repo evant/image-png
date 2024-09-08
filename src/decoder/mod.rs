@@ -13,7 +13,7 @@ use std::ops::Range;
 use crate::adam7;
 use crate::chunk;
 use crate::common::{
-    BitDepth, BytesPerPixel, ColorType, Info, ParameterErrorKind, Transformations,
+    AlphaMode, BitDepth, BytesPerPixel, ColorType, Info, ParameterErrorKind, Transformations,
 };
 use crate::filter::{unfilter, FilterType};
 
@@ -85,6 +85,8 @@ pub struct Decoder<R: Read> {
     read_decoder: ReadDecoder<R>,
     /// Output transformations
     transform: Transformations,
+    /// Output alpha mode
+    alpha_mode: AlphaMode,
 }
 
 /// A row of data with interlace information attached.
@@ -153,6 +155,7 @@ impl<R: Read> Decoder<R> {
                 at_eof: false,
             },
             transform: Transformations::IDENTITY,
+            alpha_mode: AlphaMode::default(),
         }
     }
 
@@ -168,6 +171,7 @@ impl<R: Read> Decoder<R> {
                 at_eof: false,
             },
             transform: Transformations::IDENTITY,
+            alpha_mode: AlphaMode::default(),
         }
     }
 
@@ -230,6 +234,7 @@ impl<R: Read> Decoder<R> {
             current_start: 0,
             transform: self.transform,
             transform_fn: None,
+            alpha_mode: self.alpha_mode,
             scratch_buffer: Vec::new(),
         };
 
@@ -261,6 +266,10 @@ impl<R: Read> Decoder<R> {
     /// Many options have an impact on memory or CPU usage during decoding.
     pub fn set_transformations(&mut self, transform: Transformations) {
         self.transform = transform;
+    }
+
+    pub fn set_alpha_mode(&mut self, alpha_mode: AlphaMode) {
+        self.alpha_mode = alpha_mode;
     }
 
     /// Set the decoder to ignore all text chunks while parsing.
@@ -389,6 +398,8 @@ pub struct Reader<R: Read> {
     /// Function that can transform decompressed, unfiltered rows into final output.
     /// See the `transform.rs` module for more details.
     transform_fn: Option<TransformFn>,
+    /// Alpha mode
+    alpha_mode: AlphaMode,
     /// This buffer is only used so that `next_row` and `next_interlaced_row` can return reference
     /// to a byte slice. In a future version of this library, this buffer will be removed and
     /// `next_row` and `next_interlaced_row` will write directly into a user provided output buffer.
@@ -652,7 +663,11 @@ impl<R: Read> Reader<R> {
         // Apply transformations and write resulting data to buffer.
         let transform_fn = {
             if self.transform_fn.is_none() {
-                self.transform_fn = Some(create_transform_fn(self.info(), self.transform)?);
+                self.transform_fn = Some(create_transform_fn(
+                    self.info(),
+                    self.alpha_mode,
+                    self.transform,
+                )?);
             }
             self.transform_fn.as_deref().unwrap()
         };
